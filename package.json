@@ -7,10 +7,10 @@
         "clean": "rimraf \"functions/*\"",
         "lint": "tslint --project tsconfig.json",
         "tsc": "tsc",
-        "cp-package": "copyfiles package.json functions/src",
+        "cp-package": "copyfiles package.json functions",
         "build": "run-s clean lint tsc cp-package",
         "test": "mocha \"functions/test/\"",
-        "deploy": "rm -rf functions && npm run build && cd functions/src && gcloud functions deploy --runtime nodejs16 --trigger-http --project jendapersonal"
+        "deploy": "npm run build && cd functions && gcloud functions deploy --runtime nodejs16 --region europe-west3 --trigger-http --project jendapersonal"
     },
     "bin": {
         "create-project": "./cli.js"
@@ -23,6 +23,10 @@
     "author": "\"@flatfisher <kyoheitsuda@flatfish.jp> (https://kyohei.flatfish.jp)",
     "license": "MIT",
     "dependencies": {
+        "@pagerduty/pdjs": "^2.2.4",
+        "axios": "^0.24.0",
+        "firebase-admin": "^10.0.0",
+        "fp-ts": "^2.11.5",
         "google-cloud-functions-typescript": "^0.0.4"
     },
     "devDependencies": {

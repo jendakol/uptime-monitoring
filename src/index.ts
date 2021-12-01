@@ -1,9 +1,21 @@
-import { Request, Response } from 'express'
+import {Request, Response} from 'express'
 
-export function helloWorld(_: Request, res: Response) {
+import {checkEndpoint} from './checkEndpoint'
+
+export async function checkEndpoints(_: Request, res: Response) {
     try {
-        res.status(200)
-        res.send('Hello World')
+        const resp = await checkEndpoint("cloud")
+
+        switch (resp._tag) {
+            case "Right":
+                res.status(200)
+                break;
+            case "Left":
+                res.status(500)
+                break;
+        }
+
+        res.send(resp)
     } catch (err) {
         res.status(500)
         res.send(err)

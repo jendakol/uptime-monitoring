@@ -58,5 +58,10 @@
             "severity": "warning"
         }
     },
-    "defaultSeverity": "error"
+    "defaultSeverity": "error",
+    "linterOptions": {
+        "exclude": [
+            "src/main.ts"
+        ]
+    }
 }
