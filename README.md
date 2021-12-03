@@ -1,8 +1,16 @@
 # Uptime monitoring
 
+This is a simple solution for monitoring your HTTP endpoints (you can, of course, extend it to check anything...).  
+I was using [Uptime Robot](https://uptimerobot.com/) but was not willing to accept their paid plan terms (it was just too expensive for a
+guy who runs few family-critical services, without any profit). So I decided to learn TypeScript, wrote this tool and deployed in into the
+Google Cloud where it runs as Google Functions, triggered by Cloud Scheduler.
+
+Feel free to contact me, I can provide you my Grafana dashboard for this ;-)
+
 ## Dependencies
 
-Installed NPM, `gcloud`.
+Installed NPM, `gcloud`. Running StatsD (where metrics will be sent) and [PagerDuty](https://www.pagerduty.com/pricing/) account/services (
+optional).
 
 ## Development
 
