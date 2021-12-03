@@ -1,21 +1,16 @@
 import {Request, Response} from 'express'
 
-import {checkEndpoint} from './checkEndpoint'
+import {checkEndpoints as functionCheckEndpoints} from './checkEndpoint'
 
 export async function checkEndpoints(_: Request, res: Response) {
-    const handles = ["cloud", "grafana"]
-
     try {
-        for (const handle of handles) {
-            const resp = await checkEndpoint(handle)
-            console.log(resp)
-        }
+        const resp = await functionCheckEndpoints
+
+        res.status(200)
+        res.send(resp)
     } catch (err) {
         res.status(500)
         res.send(err)
         return;
     }
-
-    res.status(200)
-    res.send("ok")
 }

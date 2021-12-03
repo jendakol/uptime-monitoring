@@ -33,12 +33,23 @@ const converter = () => ({
     }
 })
 
-export async function checkEndpoint(serverhandle: string) {
+export async function checkEndpoints() {
     assert(process.env.PAGERDUTY_TOKEN !== undefined)
     assert(process.env.PAGERDUTY_FROM_HEADER !== undefined)
     assert(process.env.STATSD_HOST !== undefined)
     assert(process.env.STATSD_PREFIX !== undefined)
 
+    const docs = await firestore.collection("endpointConfigs").listDocuments()
+
+    for (const doc of docs) {
+        const resp = await checkEndpoint(doc.id)
+        console.log(resp)
+    }
+
+    return right("ok")
+}
+
+async function checkEndpoint(serverhandle: string) {
     const start = new Date()
 
     const statsdClient = new StatsdClient({host: process.env.STATSD_HOST, prefix: process.env.STATSD_PREFIX + "." + serverhandle});
