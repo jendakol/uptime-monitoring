@@ -3,21 +3,19 @@ import {Request, Response} from 'express'
 import {checkEndpoint} from './checkEndpoint'
 
 export async function checkEndpoints(_: Request, res: Response) {
+    const handles = ["cloud", "grafana"]
+
     try {
-        const resp = await checkEndpoint("cloud")
-
-        switch (resp._tag) {
-            case "Right":
-                res.status(200)
-                break;
-            case "Left":
-                res.status(500)
-                break;
+        for (const handle of handles) {
+            const resp = await checkEndpoint(handle)
+            console.log(resp)
         }
-
-        res.send(resp)
     } catch (err) {
         res.status(500)
         res.send(err)
+        return;
     }
+
+    res.status(200)
+    res.send("ok")
 }

@@ -5,7 +5,7 @@
         "no-namespace": true,
         "no-parameter-reassignment": true,
         "no-reference": true,
-        "no-unnecessary-type-assertion": true,
+        "no-unnecessary-type-assertion": false,
         "label-position": true,
         "no-conditional-assignment": true,
         "no-construct": true,

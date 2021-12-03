@@ -1,21 +1,28 @@
-import axios from 'axios';
+import {api as PagerDuty} from "@pagerduty/pdjs";
+import * as firebase from "firebase-admin"
+import axios from "axios";
 import {none, Option, some} from 'fp-ts/Option'
-import {api} from "@pagerduty/pdjs";
-import * as admin from "firebase-admin"
 import {left, right} from "fp-ts/Either";
+import assert = require("assert");
 
-admin.initializeApp({
-    credential: admin.credential.applicationDefault()
+const StatsdClient = require('statsd-client')
+
+firebase.initializeApp({
+    credential: firebase.credential.applicationDefault()
 });
 
-const db = admin.firestore();
-const pd = api({token: 'e+NqeQedDk5bUeZ_sPXA'});
+const firestore = firebase.firestore();
+const pagerDuty = PagerDuty({token: process.env.PAGERDUTY_TOKEN});
 
 interface EndpointConfig {
     url: string,
     serverName: string,
+    serviceReference: string,
     existingIncidentId: Option<string>
 }
+
+// TODO optional pagerduty alert
+// TODO number of consequent failures
 
 const converter = () => ({
     toFirestore: (data: Partial<EndpointConfig>) => data,
@@ -27,45 +34,59 @@ const converter = () => ({
 })
 
 export async function checkEndpoint(serverhandle: string) {
-    // TODO send ticks to graphite
+    assert(process.env.PAGERDUTY_TOKEN !== undefined)
+    assert(process.env.PAGERDUTY_FROM_HEADER !== undefined)
+    assert(process.env.STATSD_HOST !== undefined)
+    assert(process.env.STATSD_PREFIX !== undefined)
 
-    const docRef = db.collection('endpointConfigs').doc(serverhandle).withConverter(converter());
-    const endpointConfig = await docRef.get().then((d) => d.data())
-    if (endpointConfig === undefined) {
-        console.log(`Could not find configuration for handle '${serverhandle}'`)
-        return left("handle not found");
-    }
+    const start = new Date()
 
-    console.log(`Going to test URL '${endpointConfig.url}'`)
+    const statsdClient = new StatsdClient({host: process.env.STATSD_HOST, prefix: process.env.STATSD_PREFIX + "." + serverhandle});
 
     try {
-        await axios.get(endpointConfig.url, {timeout: 2000})
-        // OK!
-        switch (endpointConfig.existingIncidentId._tag) {
-            case 'None' :
-                // ok!
-                return right("endpoint ok")
-            case 'Some':
-                // ok, we already have an incident to resolve...
-                console.log("About to recover from incident!")
-                return resolveIncidentAndUpdate(endpointConfig.existingIncidentId.value, endpointConfig, docRef)
+        const docRef = firestore.collection('endpointConfigs').doc(serverhandle).withConverter(converter());
+        const endpointConfig = await docRef.get().then((d) => d.data())
+        if (endpointConfig === undefined) {
+            console.log(`Could not find configuration for handle '${serverhandle}'`)
+            return left("handle not found");
         }
-    } catch (e) {
-        console.log("The endpoint is down!")
 
-        // oops, let's create the incident
-        switch (endpointConfig.existingIncidentId._tag) {
-            case 'None' :
-                return createIncidentAndUpdate(endpointConfig, docRef);
-            case 'Some':
-                // ok, we already have the incident...
-                return right("incident already exists")
+        console.log(`Going to test URL '${endpointConfig.url}'`)
+
+        try {
+            await axios.get(endpointConfig.url, {timeout: 2000})
+            // OK!
+            statsdClient.increment('successes')
+
+            switch (endpointConfig.existingIncidentId._tag) {
+                case 'None' :
+                    console.log(`Endpoint '${endpointConfig.url}' OK!`)
+                    return right("endpoint ok")
+                case 'Some':
+                    // ok, we already have an incident to resolve...
+                    console.log("About to recover from incident!")
+                    return resolveIncidentAndUpdate(endpointConfig.existingIncidentId.value, endpointConfig, statsdClient, docRef)
+            }
+        } catch (e) {
+            console.log("The endpoint is down!")
+            statsdClient.increment('failures')
+
+            // oops, let's create the incident
+            switch (endpointConfig.existingIncidentId._tag) {
+                case 'None' :
+                    return createIncidentAndUpdate(endpointConfig, statsdClient, docRef);
+                case 'Some':
+                    // ok, we already have the incident...
+                    return right("incident already exists")
+            }
         }
+    } finally {
+        statsdClient.timing('run', start)
     }
 }
 
-async function createIncidentAndUpdate(endpointConfig: EndpointConfig, docRef: FirebaseFirestore.DocumentReference<EndpointConfig>) {
-    const newId = await createIncident(endpointConfig.serverName)
+async function createIncidentAndUpdate(endpointConfig: EndpointConfig, statsdClient: any, docRef: FirebaseFirestore.DocumentReference<EndpointConfig>) {
+    const newId = await createIncident(endpointConfig, statsdClient)
 
     console.log(`Created new incident with ID '${newId}'`)
 
@@ -80,25 +101,25 @@ async function createIncidentAndUpdate(endpointConfig: EndpointConfig, docRef: F
     }
 }
 
-async function createIncident(serverName: string) {
+async function createIncident(endpointConfig: EndpointConfig, statsdClient: any) {
     const id = makeId(20)
 
-    const resp = await pd({
+    const resp = await pagerDuty({
         method: 'post',
         endpoint: '/incidents',
-        headers: {'From': "jendakolena@gmail.com"},
+        headers: {'From': process.env.PAGERDUTY_FROM_HEADER as string},
         data: {
             incident: {
                 type: "incident",
                 incident_key: id,
-                title: serverName + " is not available",
+                title: endpointConfig.serverName + " is not available",
                 body: {
                     type: "incident_body",
-                    details: "Server " + serverName + " is not available. Check it & fix it."
+                    details: "Server " + endpointConfig.serverName + " is not available. Check it & fix it."
                 },
                 service: {
                     type: "service_reference",
-                    id: "PZW4R7U"
+                    id: endpointConfig.serviceReference
                 }
             }
         }
@@ -106,6 +127,7 @@ async function createIncident(serverName: string) {
 
     if (resp.status === 201) {
         console.log("Incident created!")
+        statsdClient.increment('incidents.created')
 
         return resp.data.incident.id
     } else {
@@ -115,10 +137,10 @@ async function createIncident(serverName: string) {
     }
 }
 
-async function resolveIncidentAndUpdate(id: string, endpointConfig: EndpointConfig, docRef: FirebaseFirestore.DocumentReference<EndpointConfig>) {
+async function resolveIncidentAndUpdate(id: string, endpointConfig: EndpointConfig, statsdClient: any, docRef: FirebaseFirestore.DocumentReference<EndpointConfig>) {
     endpointConfig.existingIncidentId = none
     try {
-        await resolveIncident(id)
+        await resolveIncident(id, statsdClient)
         await docRef.set(endpointConfig)
         return right("incident resolved")
     } catch (e) {
@@ -127,11 +149,11 @@ async function resolveIncidentAndUpdate(id: string, endpointConfig: EndpointConf
     }
 }
 
-async function resolveIncident(id: string) {
-    const resp = await pd({
+async function resolveIncident(id: string, statsdClient: any) {
+    const resp = await pagerDuty({
         method: 'put',
         endpoint: '/incidents',
-        headers: {'From': "jendakolena@gmail.com"},
+        headers: {'From': process.env.PAGERDUTY_FROM_HEADER as string},
         data: {
             incidents: [{
                 type: "incident_reference",
@@ -143,6 +165,7 @@ async function resolveIncident(id: string) {
 
     if (resp.status === 200) {
         console.log("Incident resolved!")
+        statsdClient.increment('incidents.resolved')
         return
     } else {
         console.log("Could not resolve incident:")

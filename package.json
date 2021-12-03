@@ -8,9 +8,10 @@
         "lint": "tslint --project tsconfig.json",
         "tsc": "tsc",
         "cp-package": "copyfiles package.json functions",
-        "build": "run-s clean lint tsc cp-package",
+        "cp-env": "copyfiles .env.yaml functions",
+        "build": "run-s clean lint tsc cp-package cp-env",
         "test": "mocha \"functions/test/\"",
-        "deploy": "npm run build && cd functions && gcloud functions deploy --runtime nodejs16 --region europe-west3 --trigger-http --project jendapersonal"
+        "deploy": "npm run build && cd functions && gcloud functions deploy --runtime nodejs16 --trigger-http --env-vars-file .env.yaml"
     },
     "bin": {
         "create-project": "./cli.js"
@@ -27,7 +28,9 @@
         "axios": "^0.24.0",
         "firebase-admin": "^10.0.0",
         "fp-ts": "^2.11.5",
-        "google-cloud-functions-typescript": "^0.0.4"
+        "google-cloud-functions-typescript": "^0.0.4",
+        "statsd-client": "^0.4.7",
+        "ts-node": "^10.4.0"
     },
     "devDependencies": {
         "@types/chai": "4.2.22",

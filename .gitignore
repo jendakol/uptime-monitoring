@@ -64,3 +64,4 @@ functions/*
 !functions/.gitkeep
 
 src/main.ts
+.env.yaml
