@@ -14,34 +14,39 @@ firebase.initializeApp({
 const firestore = firebase.firestore();
 const pagerDuty = PagerDuty({token: process.env.PAGERDUTY_TOKEN});
 
+const ConfigCollectionName = "endpointConfigs"
+
 interface EndpointConfig {
     url: string,
     serverName: string,
-    serviceReference: string,
+    serviceReference: Option<string>,
+    consequentFailuresThreshold: number,
+    consequentFailuresCurrent: number,
     existingIncidentId: Option<string>
 }
-
-// TODO optional pagerduty alert
-// TODO number of consequent failures
 
 const converter = () => ({
     toFirestore: (data: Partial<EndpointConfig>) => data,
     fromFirestore: (snap: FirebaseFirestore.QueryDocumentSnapshot) => {
         const data = snap.data() as EndpointConfig
+        if (data.serviceReference === undefined) data.serviceReference = none
         if (data.existingIncidentId === undefined) data.existingIncidentId = none
         return data
     }
 })
 
 export async function checkEndpoints() {
+    console.log("Checking all ENVs")
+
     assert(process.env.PAGERDUTY_TOKEN !== undefined)
     assert(process.env.PAGERDUTY_FROM_HEADER !== undefined)
     assert(process.env.STATSD_HOST !== undefined)
     assert(process.env.STATSD_PREFIX !== undefined)
 
-    const docs = await firestore.collection("endpointConfigs").listDocuments()
+    const docs = await firestore.collection(ConfigCollectionName).listDocuments()
 
     for (const doc of docs) {
+        console.log(`Checking '${doc.id}'`)
         const resp = await checkEndpoint(doc.id)
         console.log(resp)
     }
@@ -49,13 +54,13 @@ export async function checkEndpoints() {
     return right("ok")
 }
 
-async function checkEndpoint(serverhandle: string) {
+export async function checkEndpoint(serverhandle: string) {
     const start = new Date()
 
     const statsdClient = new StatsdClient({host: process.env.STATSD_HOST, prefix: process.env.STATSD_PREFIX + "." + serverhandle});
 
     try {
-        const docRef = firestore.collection('endpointConfigs').doc(serverhandle).withConverter(converter());
+        const docRef = firestore.collection(ConfigCollectionName).doc(serverhandle).withConverter(converter());
         const endpointConfig = await docRef.get().then((d) => d.data())
         if (endpointConfig === undefined) {
             console.log(`Could not find configuration for handle '${serverhandle}'`)
@@ -69,30 +74,62 @@ async function checkEndpoint(serverhandle: string) {
             // OK!
             statsdClient.increment('successes')
 
-            switch (endpointConfig.existingIncidentId._tag) {
-                case 'None' :
-                    console.log(`Endpoint '${endpointConfig.url}' OK!`)
-                    return right("endpoint ok")
-                case 'Some':
-                    // ok, we already have an incident to resolve...
-                    console.log("About to recover from incident!")
-                    return resolveIncidentAndUpdate(endpointConfig.existingIncidentId.value, endpointConfig, statsdClient, docRef)
-            }
+            return resolveIncidentIfAny(endpointConfig, statsdClient, docRef)
         } catch (e) {
             console.log("The endpoint is down!")
             statsdClient.increment('failures')
 
-            // oops, let's create the incident
-            switch (endpointConfig.existingIncidentId._tag) {
-                case 'None' :
-                    return createIncidentAndUpdate(endpointConfig, statsdClient, docRef);
-                case 'Some':
-                    // ok, we already have the incident...
-                    return right("incident already exists")
+            endpointConfig.consequentFailuresCurrent++;
+
+            if (endpointConfig.consequentFailuresCurrent >= endpointConfig.consequentFailuresThreshold) {
+                // oops, let's create the incident
+                return createIncidentIfConfiguredAndUpdate(endpointConfig, statsdClient, docRef)
+            } else {
+                // just update the current failures count
+                try {
+                    await docRef.set(endpointConfig)
+                    return right("not enough consequent failures")
+                } catch (e) {
+                    console.log("Couldn't update config in DB!")
+                    console.log(e)
+                    return left("not enough consequent failures, couldn't save config to DB")
+                }
             }
         }
     } finally {
         statsdClient.timing('run', start)
+    }
+}
+
+async function createIncidentIfConfiguredAndUpdate(endpointConfig: EndpointConfig, statsdClient: any, docRef: FirebaseFirestore.DocumentReference<EndpointConfig>) {
+    switch (endpointConfig.serviceReference?._tag) {
+        case 'Some':
+            switch (endpointConfig.existingIncidentId._tag) {
+                case 'None' :
+                    return createIncidentAndUpdate(endpointConfig, statsdClient, docRef)
+                case 'Some':
+                    // ok, we already have the incident...
+
+                    try {
+                        await docRef.set(endpointConfig)
+                        return right("incident already exists")
+                    } catch (e) {
+                        console.log("Couldn't update config in DB!")
+                        console.log(e)
+                        return left("incident already exists, couldn't save config to DB")
+                    }
+            }
+            break;
+
+        case 'None':
+            try {
+                await docRef.set(endpointConfig)
+                return right("incidents not configured")
+            } catch (e) {
+                console.log("Couldn't update config in DB!")
+                console.log(e)
+                return left("incidents not configured, couldn't save config to DB")
+            }
     }
 }
 
@@ -146,6 +183,52 @@ async function createIncident(endpointConfig: EndpointConfig, statsdClient: any)
         console.log(resp)
         throw new Error(resp.data)
     }
+}
+
+async function resolveIncidentIfAny(endpointConfig: EndpointConfig, statsdClient: any, docRef: FirebaseFirestore.DocumentReference<EndpointConfig>) {
+    switch (endpointConfig.serviceReference?._tag) {
+        case 'Some':
+            switch (endpointConfig.existingIncidentId._tag) {
+                case 'None' :
+                case undefined:
+                    // just update db
+                    console.log(`Endpoint '${endpointConfig.url}' OK!`)
+                    endpointConfig.consequentFailuresCurrent = 0
+
+                    try {
+                        await docRef.set(endpointConfig)
+                        return right("endpoint ok")
+                    } catch (e) {
+                        console.log(e)
+                        return left("endpoint ok, db update failed")
+                    }
+
+                case 'Some':
+                    // ok, we already have an incident to resolve...
+                    console.log("About to recover from incident!")
+                    return resolveIncidentAndUpdate(endpointConfig.existingIncidentId.value, endpointConfig, statsdClient, docRef)
+            }
+            break;
+
+        case 'None':
+        case undefined:
+            if (endpointConfig.consequentFailuresCurrent !== 0) {
+                endpointConfig.consequentFailuresCurrent = 0
+
+                try {
+                    await docRef.set(endpointConfig)
+                    return right("endpoint ok")
+                } catch (e) {
+                    console.log(e)
+                    return left("endpoint ok, db update failed")
+                }
+            } else {
+                // no need to update anything
+                return right("endpoint ok")
+            }
+    }
+
+    console.log("unreachable")
 }
 
 async function resolveIncidentAndUpdate(id: string, endpointConfig: EndpointConfig, statsdClient: any, docRef: FirebaseFirestore.DocumentReference<EndpointConfig>) {
